@@ -1,0 +1,12 @@
+# dsh-feishu-channel 的 bundle 层。
+#
+# 这里只声明插件入口。所有可配置项都在 index.mjs 的 DEFAULTS 里，
+# 使用方在自己的 profile `cordis.patch.yml` 中用同一个 id 覆盖即可。
+#
+# ⚠️ 注意：profile 层的 patch 会**替换整个 config**（不是深合并），
+# 所以覆盖时必须把你需要的字段全部重述一遍。
+#
+# `./index.mjs` 会被 loader 相对本文件解析成 file URL。
+- insert:
+    - id: feishu-channel
+      name: './index.mjs'

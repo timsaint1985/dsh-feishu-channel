@@ -1,0 +1,73 @@
+# ============================================================================
+# dsh-feishu-channel 配置模板
+# ============================================================================
+# 把本文件内容填好后，粘到 <DSH_HOME>/profiles/<你的 profile>/cordis.patch.yml
+#
+# ⚠️ 两条硬规则：
+#   1. profile 层的 patch 按 id **替换整个 config**（不是深合并），
+#      所以下面每一项都要保留（不需要的可以删，但保留的必须写全）。
+#   2. 未列出的字段会回落到插件 index.mjs 里的 DEFAULTS。
+#
+# ============================================================================
+
+# ---- 无头通道 profile 必须关掉它 -------------------------------------------
+# `ui-approval` 是 web UI 的审批应答者。它接管 approval/request waterfall 后
+# 会一直等浏览器里的点击、永不返回，导致后面的应答者（本插件）根本没机会执行
+# —— 表现为 agent 卡死在 running。
+#
+# ⚠️ 如果你要在**同时开着浏览器界面**的 profile（如 web）里用它，
+#    不要照抄这一行：那样浏览器会话的审批弹窗会消失。
+#    正确做法是先解决两个应答者的分工（按 agent 来源路由），
+#    详见 DESIGN.md 的 M10。
+- id: ui-approval
+  disabled: true
+
+# ---- 飞书通道插件 -----------------------------------------------------------
+- id: feishu-channel
+  config:
+    # 【必填】lark-cli profile —— 决定用哪个飞书应用
+    #   查看命令: lark-cli auth status --profile <profile>
+    profile: cli_xxxxxxxxxxxxxxxx
+
+    # 【必填】用户白名单：只有这些 open_id 能驱动 agent。
+    #   留空或删掉 = 拒绝一切消息（安全默认）
+    #   怎么拿 open_id: lark-cli contact +search-user --query "你的名字" --as user
+    allowedOpenIds:
+      - ou_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+    # 【必填】新会话的工作目录
+    workspacePath: 'C:\你的工作区'
+
+    # 【必填】agent preset —— 决定会话能用哪些工具
+    #   不设的话 agent 没有工具，模型会把工具调用吐成纯文本
+    agentPreset: standard
+
+    # 【必填】模型路由。
+    #   程序化创建的 agent **不会**继承 profile 的默认模型，必须显式给。
+    #   且必须用支持工具调用的模型。
+    provider: deepseek-official
+    model: deepseek-v4-flash
+
+    # 会话 id 前缀（改它可强制新建会话）
+    sessionPrefix: 'sess-feishu'
+
+    # chat_id → sessionId 绑定持久化位置。
+    # 建议放在 DSH home 下，别混进插件目录
+    bindingsFile: 'C:\Users\<你>\.dsh\feishu-channel\bindings.json'
+
+    # 群聊（v1 默认关闭；打开前请确认已在代码层支持 @ 校验）
+    allowGroupChats: false
+
+    # 启动时是否连飞书长连接
+    autoConnect: true
+
+    # 审批等待决定的超时（毫秒）。超时按 fail-closed 返回 unavailable。
+    # 默认 300000 = 5 分钟
+    approvalTimeoutMs: 300000
+
+    # 自测入口：启动 3 秒后注入一条合成消息。平时保持关闭。
+    selfTest:
+      enabled: false
+
+    # lark-cli 可执行文件（默认取 npm 全局安装路径，换机器时覆盖）
+    # larkCli: 'C:\Users\<你>\AppData\Roaming\npm\node_modules\@larksuite\cli\bin\lark-cli.exe'

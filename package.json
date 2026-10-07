@@ -1,0 +1,48 @@
+{
+  "name": "dsh-feishu-channel",
+  "version": "0.1.0",
+  "description": "Feishu/Lark channel for DeepSeek Harness: drives DSH agent sessions from Feishu messages, with a user allowlist and card-based approval.",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.mjs",
+    "cordis.patch.yml",
+    "cordis.patch.example.yml",
+    "install.ps1",
+    "README.md",
+    "DESIGN.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "bundle",
+    "feishu",
+    "lark",
+    "channel",
+    "bot"
+  ],
+  "license": "MIT",
+  "author": "timsaint1985",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timsaint1985/dsh-feishu-channel.git"
+  },
+  "homepage": "https://github.com/timsaint1985/dsh-feishu-channel#readme",
+  "bugs": {
+    "url": "https://github.com/timsaint1985/dsh-feishu-channel/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

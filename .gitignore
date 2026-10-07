@@ -1,0 +1,17 @@
+# 运行时状态 —— 绝对不要提交（含 chat_id → sessionId 绑定）
+bindings.json
+status.json
+*.marker
+
+# 依赖与打包产物
+node_modules/
+*.tgz
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
