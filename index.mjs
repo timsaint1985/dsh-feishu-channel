@@ -52,12 +52,29 @@ const DEFAULTS = {
    * 不设 preset 时 agent 几乎没有工具，模型会把工具调用当纯文本吐出来。
    */
   agentPreset: 'standard',
-  /** 是否响应群聊（v1 仅在明确 @ 时；先默认关闭） */
+  /** 是否响应群聊。开启时**只在机器人被 @ 时**响应（需要 botOpenId） */
   allowGroupChats: false,
+  /**
+   * 机器人自己的 open_id，用于群聊里判断「是否被 @」。
+   * 留空则在启动时通过 `lark-cli api GET /open-apis/bot/v3/info` 自动获取。
+   * 拿不到时会**拒绝所有群消息**（fail-closed）。
+   */
+  botOpenId: '',
   /** 启动时是否立刻连接飞书长连接 */
   autoConnect: true,
   /** 审批卡片等待点击的超时（毫秒）；超时按 unavailable 处理（fail-closed） */
   approvalTimeoutMs: 300000,
+  /**
+   * 是否由本插件接管审批。
+   * 默认 true：通道创建的 agent 的审批走飞书卡片。
+   *
+   * ⚠️ 置为 false 时不注册应答者，审批交给同 profile 的其他应答者
+   * （例如 web UI 的 ui-approval）。只有在**同时开着浏览器界面**、
+   * 且希望通道 agent 的审批弹在浏览器里时才这样配。
+   */
+  answerApprovals: true,
+  /** 去重窗口：记住最近多少条消息 id，防止长连接重连/重投导致重复执行 */
+  dedupWindow: 500,
 }
 
 export function apply(ctx, config = {}) {
@@ -134,6 +151,28 @@ export function apply(ctx, config = {}) {
   const restartTimers = new Set()
   /** 自测注入定时器；必须在 cleanup 里清掉，否则卸载后还会注入合成消息 */
   let selfTestTimer = null
+
+  /** bot 自己的 open_id（群聊 @ 校验用），启动时解析 */
+  let botOpenId = ''
+  /** 最近处理过的事件 id（有界 LRU），防止长连接重连 / 事件重投导致重复执行 */
+  const seenIds = new Set()
+
+  /**
+   * 事件去重。返回 true 表示这条已经处理过，应当丢弃。
+   * 飞书会重投事件（我们实测见过断线补投），长连接每 10 秒还会重连一次 ——
+   * 没有这层，同一条消息会被喂给 agent 两次：工具执行两次、回复发两次。
+   */
+  function alreadySeen(id) {
+    if (!id) return false
+    if (seenIds.has(id)) return true
+    seenIds.add(id)
+    const cap = cfg.dedupWindow > 0 ? cfg.dedupWindow : 500
+    while (seenIds.size > cap) {
+      // Set 保持插入顺序，删掉最早的那个
+      seenIds.delete(seenIds.values().next().value)
+    }
+    return false
+  }
 
   let createUserMessage = null
 
@@ -379,15 +418,38 @@ export function apply(ctx, config = {}) {
         return
       }
 
+      // M8：事件去重。长连接重连 / 飞书重投会把同一条消息再喂一次 ——
+      // 没有这层，agent 会重复执行工具、重复回复。
+      if (alreadySeen(ev.message_id)) {
+        log('重复事件，已丢弃:', ev.message_id)
+        writeStatus({ deduped: ev.message_id })
+        return
+      }
+
       const senderId = ev.sender_id
       const chatId = ev.chat_id
       const text = (ev.content ?? '').trim()
       if (!text) return
 
-      // 群聊过滤放在白名单**之前**：避免机器人对群里的陌生人生成回复
-      if (ev.chat_type !== 'p2p' && !cfg.allowGroupChats) {
-        log('群聊未启用，忽略')
-        return
+      // 群聊：必须在**被 @** 时才响应。
+      // 只判 chat_type 是不够的 —— 开关一开，群里任何白名单用户的消息
+      // 都会驱动 agent 并把回复发进群。拿不到 botOpenId 时一律拒绝（fail-closed）。
+      if (ev.chat_type !== 'p2p') {
+        if (!cfg.allowGroupChats) {
+          log('群聊未启用，忽略')
+          return
+        }
+        if (!botOpenId) {
+          warn('群聊已启用但 botOpenId 未知，拒绝群消息（fail-closed）')
+          writeStatus({ groupRejectedNoBotId: true })
+          return
+        }
+        const mentioned =
+          Array.isArray(ev.mentions) && ev.mentions.some((m) => m && m.id === botOpenId)
+        if (!mentioned) {
+          log('群聊中未被 @，忽略')
+          return
+        }
       }
 
       // 白名单 —— fail closed
@@ -565,6 +627,14 @@ export function apply(ctx, config = {}) {
       if (disposing) return
       if (!ev || ev.type !== 'card.action.trigger') return
 
+      // M8：卡片事件同样会被重投。用 event_id 去重（不能用 message_id ——
+      // 同一张卡片的不同点击会共用它，那样会把正常点击也丢掉）。
+      if (alreadySeen(ev.event_id)) {
+        log('重复卡片事件，已丢弃:', ev.event_id)
+        writeStatus({ dedupedCard: ev.event_id })
+        return
+      }
+
       // 白名单：能点卡片的也必须是被授权的人
       if (!cfg.allowedOpenIds?.includes(ev.operator_id)) {
         writeStatus({ approvalRejectedOperator: ev.operator_id })
@@ -694,25 +764,33 @@ export function apply(ctx, config = {}) {
         })
       })
 
-      // ④ 该 agent 的审批请求 → 飞书卡片。我们是本通道 agent 的最终应答者。
-      //    prepend：waterfall 里排前面。若别的应答者（如 web UI 的 ui-approval）
-      //    先接管，它会一直等浏览器点击、永不返回，后面的监听器就没机会跑。
-      const approvalHandler = async (req) => {
-        try {
-          const cur = streams.get(agent) ?? { chatId }
-          writeStatus({ approvalRequest: { tool: req.toolName, reason: req.reason ?? null } })
-          const outcome = await askViaFeishu(req, cur.chatId)
-          writeStatus({ approvalOutcome: outcome })
-          return outcome
-        } catch (e) {
-          writeStatus({ lastError: String(e?.stack ?? e), lastErrorStage: 'approval/request' })
-          return 'unavailable' // fail closed
+      // ④ 该 agent 的审批请求 → 飞书卡片。
+      //
+      //  ⚠️ M10：本应答者用 `prepend` 排在 waterfall 最前面，且一旦接管就会
+      //  一直等到 approvalTimeoutMs（默认 5 分钟）拿到飞书点击/回复。
+      //  因此**同一 profile 里不要再指望别的应答者**（例如 web UI 的
+      //  ui-approval）来答通道 agent 的审批 —— 排在我们后面的根本没机会执行。
+      //  要把它交给别的应答者，把 answerApprovals 设为 false，我们就不注册。
+      if (cfg.answerApprovals === false) {
+        writeStatus({ approvalsDelegated: true })
+      } else {
+        const approvalHandler = async (req) => {
+          try {
+            const cur = streams.get(agent) ?? { chatId }
+            writeStatus({ approvalRequest: { tool: req.toolName, reason: req.reason ?? null } })
+            const outcome = await askViaFeishu(req, cur.chatId)
+            writeStatus({ approvalOutcome: outcome })
+            return outcome
+          } catch (e) {
+            writeStatus({ lastError: String(e?.stack ?? e), lastErrorStage: 'approval/request' })
+            return 'unavailable' // fail closed
+          }
         }
-      }
-      try {
-        agentCtx.on('approval/request', approvalHandler, { prepend: true })
-      } catch {
-        agentCtx.on('approval/request', approvalHandler)
+        try {
+          agentCtx.on('approval/request', approvalHandler, { prepend: true })
+        } catch {
+          agentCtx.on('approval/request', approvalHandler)
+        }
       }
 
       writeStatus({ streamAttached: true })
@@ -852,6 +930,32 @@ export function apply(ctx, config = {}) {
     log('已停止')
   }
 
+  /** 解析 bot 自己的 open_id（群聊 @ 校验用）。失败则留空 → 群消息一律拒绝。 */
+  async function resolveBotOpenId() {
+    if (botOpenId) return botOpenId
+    if (cfg.botOpenId) {
+      botOpenId = cfg.botOpenId
+      return botOpenId
+    }
+    try {
+      const r = await larkCli(
+        ['api', 'GET', '/open-apis/bot/v3/info', '--as', 'bot', '--profile', cfg.profile],
+        { timeoutMs: 20000 },
+      )
+      const id = r?.data?.data?.open_id ?? r?.data?.open_id
+      if (id) {
+        botOpenId = id
+        log('已解析 bot open_id:', id)
+        writeStatus({ botOpenId: id })
+      } else {
+        warn('无法解析 bot open_id（响应缺少 open_id），群聊将拒绝所有消息')
+      }
+    } catch (e) {
+      warn('解析 bot open_id 失败:', e?.message ?? e)
+    }
+    return botOpenId
+  }
+
   // ---- 启动 ---------------------------------------------------------------
   let started = false
   const start = () => {
@@ -877,6 +981,15 @@ export function apply(ctx, config = {}) {
     if (!cfg.allowedOpenIds?.length) {
       warn('⚠️ allowedOpenIds 为空：已连接也不会响应任何消息。请在 config 里填 open_id。')
     }
+    // M6：群聊必须能判断「是否被 @」，否则一律拒绝群消息（fail-closed）
+    if (cfg.allowGroupChats) {
+      warn('群聊已启用：仅在机器人被 @ 时响应。正在解析 botOpenId…')
+      resolveBotOpenId().catch(() => {})
+    }
+    // M10：明确告知审批归属，避免与同 profile 的其他应答者互相压掉
+    if (cfg.answerApprovals === false) {
+      warn('answerApprovals=false：本插件不接管审批，交给同 profile 的其他应答者。')
+    }
     if (cfg.autoConnect) {
       startConsumer('im.message.receive_v1', onMessage, 'msg')
       startConsumer('card.action.trigger', onCardAction, 'card')
@@ -896,7 +1009,8 @@ export function apply(ctx, config = {}) {
         onMessage({
           type: 'im.message.receive_v1',
           event_id: `selftest-${randomUUID()}`,
-          message_id: 'om_selftest_synthetic',
+          // 每次自测用不同 id，否则会被 alreadySeen 去重掉（M8 引入的）
+          message_id: `om_selftest_${randomUUID()}`,
           chat_id: t.chatId,
           chat_type: 'p2p',
           sender_id: cfg.allowedOpenIds[0],

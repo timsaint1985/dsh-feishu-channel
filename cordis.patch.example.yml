@@ -55,8 +55,26 @@
     # 建议放在 DSH home 下，别混进插件目录
     bindingsFile: 'C:\Users\<你>\.dsh\feishu-channel\bindings.json'
 
-    # 群聊（v1 默认关闭；打开前请确认已在代码层支持 @ 校验）
+    # 群聊：默认关闭。开启后**只在机器人被 @ 时**响应
+    # （需要 botOpenId；拿不到时一律拒绝群消息，fail-closed）
     allowGroupChats: false
+
+    # 机器人自己的 open_id。留空则启动时自动通过
+    #   lark-cli api GET /open-apis/bot/v3/info
+    # 获取。只有开启群聊时才需要
+    botOpenId: ''
+
+    # 是否由本插件接管审批（默认 true：通道 agent 的审批走飞书卡片）
+    #
+    # ⚠️ 设为 false 时本插件不注册应答者，审批交给同 profile 的其他应答者
+    #    （例如 web UI 的 ui-approval）。只有在你**同时开着浏览器界面**
+    #    且希望通道 agent 的审批弹在浏览器里时才这样配。
+    #    两个应答者同时指望 = 互相压掉 = agent 卡死（见 DESIGN.md M10）
+    answerApprovals: true
+
+    # 去重窗口：记住最近多少条事件 id，防止长连接重连 / 事件重投
+    # 导致同一条消息被喂给 agent 两次（工具重复执行、回复重复发送）
+    dedupWindow: 500
 
     # 启动时是否连飞书长连接
     autoConnect: true

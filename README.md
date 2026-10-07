@@ -33,9 +33,14 @@
 2. 重启该 profile
 
 > ⚠️ 如果你要装进**同时开着浏览器界面**的 profile（如 `web`），
-> **不要**照抄模板里的 `- id: ui-approval / disabled: true` ——
-> 那样会去掉浏览器会话的审批弹窗。正确做法是先解决两个审批应答者的分工，
-> 见 [DESIGN.md](DESIGN.md) 的 M10。
+> 注意两个审批应答者不能互相指望：本插件用 `prepend` 排在最前，且会一直等到
+> 超时（默认 5 分钟），排在其后的 `ui-approval` 根本没有机会执行。
+>
+> - 想让**通道 agent 的审批走飞书** → 保留模板里的 `disabled: true`（推荐）
+> - 想让**通道 agent 的审批弹在浏览器** → 删掉 `disabled: true`，
+>   并把 `answerApprovals` 设为 `false`（本插件就完全不注册应答者）
+>
+> 详见 [DESIGN.md](DESIGN.md) 的 M10。
 
 下面是手动步骤，供排障时参考。
 
